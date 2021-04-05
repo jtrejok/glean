@@ -1,4 +1,6 @@
 # import pyspark.sql.functions.sort_array
+from pyspark.sql import Window
+from pyspark.sql import functions as F
 from pyspark.sql.functions import collect_list, sort_array, pandas_udf, transform
 import pyspark
 from pyspark.sql import SparkSession
@@ -6,12 +8,12 @@ from pyspark.sql.types import (
     ArrayType, DoubleType, BooleanType, DateType,
     StructType, StructField, StringType, IntegerType, MapType
 )
-
+import uuid
 import pandas as pd
 
 from datetime import date
 
-from pyspark.sql.functions import udf, array, struct
+from pyspark.sql.functions import udf, array, struct, max
 from pyspark.sql.types import StringType
 
 
@@ -63,30 +65,58 @@ def diff_dates(date1, date2):
 # assumes list of sorted dates
 # @pandas_udf("string")
 
-
 def get_vender_not_seen_gleans(cur_row):
     canonical_vendor_id = cur_row["canonical_vendor_id"]
     invoice_dates = cur_row["Invoice Dates"]
-    glean_id = "GLEANID"
-    inovice_id = "someID"
+    invoice_id = "INVOICE_ID"
     gleans = []
     if len(invoice_dates) <= 1:
         return gleans
 
     # print('the invoice dates: ', invoice_dates)
-    print('the vendor id: ', canonical_vendor_id)
+    # print('the vendor id: ', canonical_vendor_id)
     for i in range(1, len(invoice_dates)):
         # if not seen in 90 days
         last_date = invoice_dates[i-1]
         cur_date = invoice_dates[i]
         count_of_months_since_last_invoice = cur_date - last_date
+        glean_id=str(uuid.uuid4())
         if count_of_months_since_last_invoice.days >= 90:
             months = abs(count_of_months_since_last_invoice.days)/30
             text = (f"First new bill in {months} "
                     f"months from vendor {canonical_vendor_id}")
             gleans.append(
                 (f"{glean_id}**{cur_date}**{text}**vendor_not_seen_in_a_while**"
-                 f"INVOICE**{inovice_id}**{canonical_vendor_id}"
+                 f"INVOICE**{invoice_id}**{canonical_vendor_id}"
+                 )
+            )
+    return gleans
+
+
+def get_vender_not_seen_gleans_2(cur_row):
+    canonical_vendor_id = cur_row["canonical_vendor_id"]
+    invoice_dates = cur_row["Invoice Dates"]
+    invoice_ids = cur_row["sorted_invoices"]
+    gleans = []
+    if len(invoice_dates) <= 1:
+        return gleans
+
+    # print('the invoice dates: ', invoice_dates)
+    # print('the vendor id: ', canonical_vendor_id)
+    for i in range(1, len(invoice_dates)):
+        # if not seen in 90 days
+        last_date = invoice_dates[i-1]
+        cur_date = invoice_dates[i]
+        invoice_id = invoice_ids[i]
+        count_of_months_since_last_invoice = cur_date - last_date
+        glean_id=str(uuid.uuid4())
+        if count_of_months_since_last_invoice.days >= 90:
+            months = abs(count_of_months_since_last_invoice.days)/30
+            text = (f"First new bill in {months} "
+                    f"months from vendor {canonical_vendor_id}")
+            gleans.append(
+                (f"{glean_id}**{cur_date}**{text}**vendor_not_seen_in_a_while**"
+                 f"INVOICE**{invoice_id}**{canonical_vendor_id}"
                  )
             )
     return gleans
@@ -96,6 +126,12 @@ vendor_glean = udf(
     lambda row: get_vender_not_seen_gleans(row),
     ArrayType(StringType())
 )
+
+vendor_glean_2 = udf(
+    lambda row: get_vender_not_seen_gleans_2(row),
+    ArrayType(StringType())
+)
+
 
 # depends on vendor id
 
@@ -122,18 +158,40 @@ def vender_not_seen_in_while():
              ])))
 
     # show only the vendor id and gleans
-    id_and_gleans= new_dates.select("canonical_vendor_id", "gleans")
+    id_and_gleans = new_dates.select("canonical_vendor_id", "gleans")
     id_and_gleans.show()
 
     print(id_and_gleans.collect()[0])
-    # vendor_count = vendor_count_group.count()
-    # vendor_count.show()
-    # print(type(vendor_count))
-    # print('this many vendors: ')
-    # print(len(vendor_count.collect()))
+
+
+def vendor_take_2():
+    w = Window.partitionBy('canonical_vendor_id').orderBy('invoice_date')
+    dates_sorted = invoice_df.withColumn(
+        'sorted_invoices', collect_list("invoice_id").over(w)
+    )
+    dates_sorted.show()
+    grouped_dates = dates_sorted.groupBy('canonical_vendor_id')\
+        .agg(max('sorted_invoices').alias("sorted_invoices"),
+             sort_array(collect_list("invoice_date")).alias("Invoice Dates")
+             )
+
+    grouped_dates.show()
+    print(grouped_dates.collect()[0])
+
+    new_dates = grouped_dates.withColumn("gleans", vendor_glean_2(
+        struct(
+            [grouped_dates["canonical_vendor_id"], grouped_dates["Invoice Dates"], grouped_dates["sorted_invoices"]
+             ])))
+
+    # show only the vendor id and gleans
+    id_and_gleans = new_dates.select("canonical_vendor_id", "gleans")
+    id_and_gleans.show()
+
+    print(id_and_gleans.collect()[0])
 
 
 vender_not_seen_in_while()
+vendor_take_2()
 
 spark.stop()
 
