@@ -15,7 +15,7 @@ import math
 from datetime import date, datetime, timedelta
 
 from pyspark.sql.functions import (
-    udf, array, struct, max,
+    udf, array, struct, max, split,
     lit, first, last, countDistinct,
     date_trunc, sum, avg, explode_outer)
 
@@ -192,10 +192,13 @@ def vendor_take_2():
 
     # get row for each glean
     id_and_gleans = id_and_gleans.select(
-        "canonical_vendor_id", explode_outer("gleans"))
+        "canonical_vendor_id", explode_outer("gleans").alias("gleans"))
     id_and_gleans.show(1000)
 
-# vendor_take_2()
+    return id_and_gleans
+
+
+vendor_gleans = vendor_take_2()
 # sys.exit()
 
 
@@ -649,7 +652,33 @@ def no_invoice_received():
     id_and_gleans = id_and_gleans.filter(id_and_gleans.gleans.isNotNull())
     id_and_gleans.show()
 
+    print(id_and_gleans.collect()[0])
 
-no_invoice_received()
+    return id_and_gleans
 
+
+#test_df = no_invoice_received()
+
+
+# TODO
+# union all result dataframes
+# transform gleans column : withColumn()
+
+def split_dataframe(input_df):
+    split_col = split(input_df["gleans"], "[**]")
+    input_df = input_df.withColumn("glean_id", split_col.getItem(0))
+    input_df = input_df.withColumn("glean_date", split_col.getItem(2))
+    input_df = input_df.withColumn("glean_text", split_col.getItem(4))
+    input_df = input_df.withColumn("glean_type", split_col.getItem(6))
+    input_df = input_df.withColumn("glean_location", split_col.getItem(8))
+    input_df = input_df.withColumn("invoice_id", split_col.getItem(10))
+    #input_df = input_df.withColumn("canonical_vendor_id", split_col.getItem(6))
+    input_df.show()
+    return input_df
+
+# split_dataframe(test_df)
+
+splitdf = split_dataframe(vendor_gleans)
+print(vendor_gleans.collect()[0])
+print(splitdf.collect()[0])
 spark.stop()
