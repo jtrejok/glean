@@ -14,7 +14,7 @@ import pandas as pd
 
 from datetime import date, datetime
 
-from pyspark.sql.functions import udf, array, struct, max, lit, first, countDistinct, date_trunc, sum, avg
+from pyspark.sql.functions import udf, array, struct, max, lit, first, last, countDistinct, date_trunc, sum, avg
 from pyspark.sql.types import StringType
 
 
@@ -343,6 +343,7 @@ def accrual_alert():
 def get_month_glean(cur_row):
     canonical_vendor_id = cur_row["canonical_vendor_id"]
     total_amount = cur_row["total_amount"]
+    invoice_id = cur_row["invoice_id"]
     try:
         average = cur_row["average"]
         month = cur_row["month"]
@@ -350,22 +351,28 @@ def get_month_glean(cur_row):
         return ""
 
     percentage = (total_amount-average)/average
+    glean_id = str(uuid.uuid4())
+    cur_date = month
+    text = ""
 
     if total_amount < 100:
         return ""
     elif total_amount < 1000:
         if percentage >= 5.0:
-            return (f"Monthly spend with {canonical_vendor_id} is "
+            text = (f"Monthly spend with {canonical_vendor_id} is "
                     f"{total_amount-average} ({percentage}%) higher than average")
     elif total_amount < 10000:
         if percentage >= 2.0:
-            return (f"Monthly spend with {canonical_vendor_id} is "
-                    f"{total_amount-average} ({percentage}%) higher than average")
-    elif total_amount >= 10000:
-        if percentage >= 0.5:
-            return (f"Monthly spend with {canonical_vendor_id} is "
+            text = (f"Monthly spend with {canonical_vendor_id} is "
                     f"{total_amount-average} ({percentage}%) higher than average")
 
+    elif total_amount >= 10000:
+        if percentage >= 0.5:
+            text = (f"Monthly spend with {canonical_vendor_id} is "
+                    f"{total_amount-average} ({percentage}%) higher than average")
+    if text:
+        return (f"{glean_id}**{cur_date}**{text}**large_month_increase_mtd**"
+                f"VENDOR**{invoice_id}**{canonical_vendor_id}")
     return ""
 
 
@@ -385,8 +392,9 @@ def large_month_increase():
     months_sum = invoice_df.groupBy(
         'canonical_vendor_id',
         date_trunc("month", invoice_df.invoice_date).alias('month'))\
-        .agg(sum("total_amount").alias('total_amount'))
+        .agg(sum("total_amount").alias('total_amount'), last('invoice_id').alias('invoice_id'))
 
+    print('monthts sum ')
     months_sum.show()
     print(len(months_sum.collect()))
 
@@ -397,6 +405,7 @@ def large_month_increase():
         'canonical_vendor_id')\
         .agg(avg("total_amount").alias("average"))
 
+    print('avgs')
     avgs.show()
 
     months_and_avgs = months_sum.join(avgs, 'canonical_vendor_id')
@@ -409,7 +418,8 @@ def large_month_increase():
                 months_and_avgs['canonical_vendor_id'],
                 months_and_avgs['average'],
                 months_and_avgs['total_amount'],
-                months_and_avgs["month"]
+                months_and_avgs["month"],
+                months_and_avgs["invoice_id"]
 
             ])
         )
