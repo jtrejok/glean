@@ -12,7 +12,7 @@ from collections import defaultdict, Counter
 import uuid
 import pandas as pd
 import math
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from pyspark.sql.functions import (
     udf, array, struct, max,
@@ -481,6 +481,76 @@ def get_basis(cur_row):
     return "MONTHLY"
 
 
+def get_glean_dates(month_diffs, month_delta, invoice_dates, cur_year, cur_month, common_day, month_index):
+    # see if these are consecutive months
+    glean_dates = []
+    consecutive = False
+    for month_i, diff in enumerate(month_diffs):
+        if month_i <= 1:
+            if diff == month_delta:
+                consecutive = True
+        else:
+            if consecutive:
+                if diff >= 2:
+                    glean_date = date(cur_year, cur_month, common_day)
+                    glean_dates.append(glean_date)
+                    # trigger until next date
+                    if month_index != len(invoice_dates)-1:
+                        next_date = invoice_dates[month_index+1]
+                        while glean_date < next_date or glean_date.month == cur_month:
+                            glean_date = glean_date + timedelta(days=1)
+                            glean_dates.append(
+                                glean_date
+                            )
+    return glean_dates
+
+
+def get_no_invoice_glean(cur_row):
+    canonical_vendor_id = cur_row["canonical_vendor_id"]
+    invoice_dates = cur_row["Invoice Dates"]
+    invoice_ids = cur_row["sorted_invoices"]
+    common_day = cur_row["common_day"]
+    basis = cur_row["basis"]
+
+    gleans = []
+    if len(invoice_dates) <= 3:
+        return gleans
+
+    glean_dates = []
+    for i in range(3, len(invoice_dates)):
+        cur_month = invoice_dates[i].month
+        cur_year = invoice_dates[i].year
+        four_months = [i.month for i in invoice_dates[i-3:i+1]]
+        cur_invoice = invoice_ids[i]
+
+        month_diffs = [
+            (j-i) for i, j in zip(four_months[:-1], four_months[1:])]
+        if basis == "MONTHLY":
+            glean_tuple = (cur_invoice, get_glean_dates(
+                month_diffs, 1, invoice_dates, cur_year, cur_month, common_day, i))
+            glean_dates.append(glean_tuple)
+
+        else:
+            glean_tuple = (cur_invoice, get_glean_dates(
+                month_diffs, 3, invoice_dates, cur_year, cur_month, common_day, i))
+            glean_dates.append(glean_tuple)
+
+    glean_strings = []
+    for in_id, g_dates in glean_dates:
+        for g in g_dates:
+            glean_id = str(uuid.uuid4())
+            text = (f"{canonical_vendor_id} generally charges between on "
+                    f"{common_day} day of each month invoices "
+                    f"are sent. On {g}, an invoice from "
+                    f"{canonical_vendor_id} has not been received")
+
+            glean_string = (f"{glean_id}**{g}**{text}**no_invoice_received**"
+                            f"VENDOR**{in_id}**{canonical_vendor_id}")
+            glean_strings.append(glean_string)
+
+    return glean_strings
+
+
 get_common_day = udf(
     lambda row: get_day(row),
     IntegerType()
@@ -572,7 +642,11 @@ def no_invoice_received():
 
     # get row for each glean
     id_and_gleans = id_and_gleans.select(
-        "canonical_vendor_id", explode_outer("gleans"))
+        "canonical_vendor_id", explode_outer("gleans").alias("gleans"))
+
+    # remove null
+    id_and_gleans.show()
+    id_and_gleans = id_and_gleans.filter(id_and_gleans.gleans.isNotNull())
     id_and_gleans.show()
 
 
