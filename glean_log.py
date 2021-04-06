@@ -14,9 +14,13 @@ import pandas as pd
 
 from datetime import date, datetime
 
-from pyspark.sql.functions import udf, array, struct, max, lit, first, last, countDistinct, date_trunc, sum, avg
+from pyspark.sql.functions import (
+    udf, array, struct, max,
+    lit, first, last, countDistinct,
+    date_trunc, sum, avg, explode_outer)
 from pyspark.sql.types import StringType
 
+import sys
 
 spark = SparkSession.builder.appName("Glean").getOrCreate()
 invoice_schema = StructType() \
@@ -180,13 +184,15 @@ def vendor_take_2():
 
     # show only the vendor id and gleans
     id_and_gleans = new_dates.select("canonical_vendor_id", "gleans")
-    id_and_gleans.show()
+    id_and_gleans.show(1000)
 
     print(id_and_gleans.collect()[0])
 
+    id_and_gleans = id_and_gleans.select("canonical_vendor_id", explode_outer("gleans"))
+    id_and_gleans.show(1000)
 
-# vendor_take_2()
-
+vendor_take_2()
+sys.exit()
 
 def get_accrual_alert_invoice(cur_row):
     canonical_vendor_id = cur_row["canonical_vendor_id"]
