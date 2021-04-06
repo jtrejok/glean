@@ -8,12 +8,13 @@ from pyspark.sql.types import (
     ArrayType, DoubleType, BooleanType, DateType,
     StructType, StructField, StringType, IntegerType, MapType
 )
+from collections import defaultdict
 import uuid
 import pandas as pd
 
 from datetime import date, datetime
 
-from pyspark.sql.functions import udf, array, struct, max, lit, first, countDistinct
+from pyspark.sql.functions import udf, array, struct, max, lit, first, countDistinct, date_trunc, sum, avg
 from pyspark.sql.types import StringType
 
 
@@ -187,27 +188,6 @@ def vendor_take_2():
 # vendor_take_2()
 
 
-# def get_accrual_alert_invoice(cur_row):
-#     canonical_vendor_id = cur_row["canonical_vendor_id"]
-#     period_end = cur_row["period_end_date"]
-#     invoice_date = cur_row["invoice_date"]
-#     invoice_id = cur_row["invoice_id"]
-
-#     try:
-#         time_dif = period_end - invoice_date
-#     except:
-#         return ""
-
-#     if time_dif.days > 90:
-#         glean_id = str(uuid.uuid4())
-#         cur_date = invoice_date
-#         text = (f"Line items from vendor {canonical_vendor_id}"
-#                 f" in this invoice cover future periods (through {period_end})")
-#         return (f"{glean_id}**{cur_date}**{text}**accrual_alert**"
-#                 f"INVOICE**{invoice_id}**{canonical_vendor_id}"
-#                 )
-
-
 def get_accrual_alert_invoice(cur_row):
     canonical_vendor_id = cur_row["canonical_vendor_id"]
 
@@ -231,6 +211,7 @@ def get_accrual_alert_invoice(cur_row):
     else:
         return ""
 
+
 def get_accrual_alert_line(cur_row):
     canonical_vendor_id = cur_row["canonical_vendor_id"]
     invoice_id = cur_row["invoice_id"]
@@ -239,10 +220,10 @@ def get_accrual_alert_line(cur_row):
         invoice_date = datetime.strptime(
             cur_row["invoice_date"], '%Y-%m-%d').date()
         period_end = cur_row["period_end_date"][-1]
-        #print('the end date: ', period_end)
+        # print('the end date: ', period_end)
         time_dif = period_end - invoice_date
     except:
-        #print('no dates!!')
+        # print('no dates!!')
         # print('type of invoice: ', type(invoice_date))
         # print("type of period end: ", type(period_end))
         return ""
@@ -252,13 +233,13 @@ def get_accrual_alert_line(cur_row):
         cur_date = invoice_date
         text = (f"Line items from vendor {canonical_vendor_id}"
                 f" in this invoice cover future periods (through {period_end})")
-        #print('setting a glean')
+        # print('setting a glean')
         return (f"{glean_id}**{cur_date}**{text}**accrual_alert**"
                 f"INVOICE**{invoice_id}**{canonical_vendor_id}"
                 )
     else:
         return ""
-        #print('day difference: ', time_dif)
+        # print('day difference: ', time_dif)
 
 
 accrual_glean = udf(
@@ -287,18 +268,13 @@ def accrual_alert():
             ]))
     )
     id_and_gleans = invoice_with_alerts.select("invoice_id", "gleans")
-    id_and_gleans = id_and_gleans.filter(id_and_gleans.gleans!="")
+    id_and_gleans = id_and_gleans.filter(id_and_gleans.gleans != "")
     id_and_gleans.show()
 
     collected = id_and_gleans.collect()
     num_results = len(collected)
     print(collected[0])
     print("number of invoice results: ", num_results)
-
-    # join invoice data with line item data
-    joined_df = invoice_df.join(line_item_df, "invoice_id", 'outer')
-    # print("joined df")
-    # joined_df.show()
 
     # )
     # add invoice_date and canonical vendor id cols to invoice df
@@ -322,11 +298,6 @@ def accrual_alert():
             "canonical_vendor_id")  # there should only be one canonical vendor id
     )
 
-    # print("dates grouped ")
-    # dates_grouped.show()
-    # invoice_dates = dates_grouped.select("invoice_date")
-    # invoice_dates.show(10000)
-
     invoice_and_line_alerts = dates_grouped.withColumn(
         "gleans",
         accrual_glean_line(
@@ -340,7 +311,7 @@ def accrual_alert():
     invoice_and_line_alerts.show()
 
     ids_and_gleans = invoice_and_line_alerts.select("invoice_id", "gleans")
-    ids_and_gleans = ids_and_gleans.filter(ids_and_gleans.gleans!="")
+    ids_and_gleans = ids_and_gleans.filter(ids_and_gleans.gleans != "")
     print('ids and gleans')
     ids_and_gleans.show(30)
     collected2 = ids_and_gleans.collect()
@@ -348,6 +319,107 @@ def accrual_alert():
     print("number of results; ", len(collected2))
 
 
-accrual_alert()
+# accrual_alert()
+
+# def get_month_increase(cur_row):
+#     canonical_vendor_id = cur_row["canonical_vendor_id"]
+#     invoice_dates = cur_row["Invoice Dates"]
+#     invoice_ids = cur_row["sorted_invoices"]
+#     total_amounts = cur_row["total_amount"]
+#     gleans = []
+#     if len(total_amounts) <= 1:
+#         return gleans
+
+#     # get cost for each month
+#     month_costs = defaultdict(int)
+#     last_seen_month = 13
+#     for i in range(1, len(total_amounts)):
+#         cur_month = invoice_dates[i-1].month
+#         cur_total = total_amounts[i-1]
+#         if cur_month < last_seen_month:
+#             last_seen_month = cur_month
+#         month_costs[last_seen_month] += cur_total
+
+def get_month_glean(cur_row):
+    canonical_vendor_id = cur_row["canonical_vendor_id"]
+    total_amount = cur_row["total_amount"]
+    try:
+        average = cur_row["average"]
+        month = cur_row["month"]
+    except:
+        return ""
+
+    percentage = (total_amount-average)/average
+
+    if total_amount < 100:
+        return ""
+    elif total_amount < 1000:
+        if percentage >= 5.0:
+            return (f"Monthly spend with {canonical_vendor_id} is "
+                    f"{total_amount-average} ({percentage}%) higher than average")
+    elif total_amount < 10000:
+        if percentage >= 2.0:
+            return (f"Monthly spend with {canonical_vendor_id} is "
+                    f"{total_amount-average} ({percentage}%) higher than average")
+    elif total_amount >= 10000:
+        if percentage >= 0.5:
+            return (f"Monthly spend with {canonical_vendor_id} is "
+                    f"{total_amount-average} ({percentage}%) higher than average")
+
+    return ""
+
+
+month_alert_glean = udf(
+    lambda row: get_month_glean(row),
+    StringType()
+)
+
+
+def large_month_increase():
+    # group by vendor and compute total for months
+    w = Window.partitionBy('canonical_vendor_id').orderBy('invoice_date')
+
+    dates_sorted = invoice_df.withColumn(
+        'sorted_invoices', collect_list("invoice_id").over(w)
+    )
+    months_sum = invoice_df.groupBy(
+        'canonical_vendor_id',
+        date_trunc("month", invoice_df.invoice_date).alias('month'))\
+        .agg(sum("total_amount").alias('total_amount'))
+
+    months_sum.show()
+    print(len(months_sum.collect()))
+
+    # get dataframe of averages for each vendor
+
+    # combine with dataframe of total monthly costs and compare
+    avgs = invoice_df.groupBy(
+        'canonical_vendor_id')\
+        .agg(avg("total_amount").alias("average"))
+
+    avgs.show()
+
+    months_and_avgs = months_sum.join(avgs, 'canonical_vendor_id')
+    months_and_avgs.show()
+
+    month_gleans = months_and_avgs.withColumn(
+        "gleans",
+        month_alert_glean(
+            struct([
+                months_and_avgs['canonical_vendor_id'],
+                months_and_avgs['average'],
+                months_and_avgs['total_amount'],
+                months_and_avgs["month"]
+
+            ])
+        )
+    )
+    month_gleans = month_gleans.filter(month_gleans.gleans != "")
+
+    month_gleans.show()
+    print(month_gleans.collect()[0])
+
+
+large_month_increase()
 
 spark.stop()
