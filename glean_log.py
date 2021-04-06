@@ -150,10 +150,13 @@ def vender_not_seen_in_while():
 
     # go through each list and output gleans
     # date_sorted.select("canonical_vendor_id", transform)
-    new_dates = date_sorted.withColumn("gleans", vendor_glean(
-        struct(
-            [date_sorted["canonical_vendor_id"], date_sorted["Invoice Dates"]
-             ])))
+    new_dates = date_sorted.withColumn(
+        "gleans",
+        vendor_glean(
+            struct([
+                date_sorted["canonical_vendor_id"],
+                date_sorted["Invoice Dates"]
+            ])))
 
     # show only the vendor id and gleans
     id_and_gleans = new_dates.select("canonical_vendor_id", "gleans")
@@ -187,6 +190,7 @@ def vendor_take_2():
 
     print(id_and_gleans.collect()[0])
 
+    # get row for each glean
     id_and_gleans = id_and_gleans.select(
         "canonical_vendor_id", explode_outer("gleans"))
     id_and_gleans.show(1000)
@@ -470,7 +474,7 @@ def get_basis(cur_row):
 
     avg_diff = math.fsum(month_diffs)/float(len(month_diffs))
 
-    print("the avg diff in months: ", avg_diff)
+    # print("the avg diff in months: ", avg_diff)
     if avg_diff >= 2:
         return "QUARTERLY"
 
@@ -484,6 +488,11 @@ get_common_day = udf(
 get_time_basis = udf(
     lambda row: get_basis(row),
     StringType()
+)
+
+no_invoice_glean = udf(
+    lambda row: get_no_invoice_glean(row),
+    ArrayType(StringType())
 )
 
 
@@ -529,11 +538,44 @@ def no_invoice_received():
             ])
         )
     )
+    # remove one off vendors
+    time_basis = time_basis.filter(time_basis.basis != "")
     time_basis.show()
 
     # go through vendor and invoice dates and compute based on months as
     # in not seen in a while using info of monthly or quarterly and most
     # frequent date
+
+    day_basis_invoices = most_common_days.join(
+        time_basis.select("canonical_vendor_id", "basis"),
+        "canonical_vendor_id"
+    )
+
+    day_basis_invoices.show()
+
+    invoice_gleans = day_basis_invoices.withColumn(
+        "gleans",
+        no_invoice_glean(
+            struct([
+                day_basis_invoices["canonical_vendor_id"],
+                day_basis_invoices["basis"],
+                day_basis_invoices["Invoice Dates"],
+                day_basis_invoices["sorted_invoices"],
+                day_basis_invoices["common_day"],
+            ])
+        )
+    )
+
+    id_and_gleans = invoice_gleans.select("canonical_vendor_id", "gleans")
+
+    id_and_gleans.show()
+
+    # get row for each glean
+    id_and_gleans = id_and_gleans.select(
+        "canonical_vendor_id", explode_outer("gleans"))
+    id_and_gleans.show()
+
+
 no_invoice_received()
 
 spark.stop()
