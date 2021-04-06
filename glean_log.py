@@ -8,17 +8,16 @@ from pyspark.sql.types import (
     ArrayType, DoubleType, BooleanType, DateType,
     StructType, StructField, StringType, IntegerType, MapType
 )
-from collections import defaultdict
+from collections import defaultdict, Counter
 import uuid
 import pandas as pd
-
+import math
 from datetime import date, datetime
 
 from pyspark.sql.functions import (
     udf, array, struct, max,
     lit, first, last, countDistinct,
     date_trunc, sum, avg, explode_outer)
-from pyspark.sql.types import StringType
 
 import sys
 
@@ -188,11 +187,13 @@ def vendor_take_2():
 
     print(id_and_gleans.collect()[0])
 
-    id_and_gleans = id_and_gleans.select("canonical_vendor_id", explode_outer("gleans"))
+    id_and_gleans = id_and_gleans.select(
+        "canonical_vendor_id", explode_outer("gleans"))
     id_and_gleans.show(1000)
 
-vendor_take_2()
-sys.exit()
+# vendor_take_2()
+# sys.exit()
+
 
 def get_accrual_alert_invoice(cur_row):
     canonical_vendor_id = cur_row["canonical_vendor_id"]
@@ -283,7 +284,7 @@ def accrual_alert():
     print("number of invoice results: ", num_results)
 
     # )
-    # add invoice_date and canonical vendor id cols to invoice df
+    # add invoice_date and canonical vendor id cols to line item df
     line_item_with_date = line_item_df.withColumn(
         "invoice_date", lit(None).cast(StringType()))\
         .withColumn("canonical_vendor_id", lit(None).cast(StringType()))
@@ -436,6 +437,103 @@ def large_month_increase():
     print(month_gleans.collect()[0])
 
 
-large_month_increase()
+# large_month_increase()
+
+def get_day(cur_row):
+    canonical_vendor_id = cur_row["canonical_vendor_id"]
+    invoice_dates = cur_row["Invoice Dates"]
+
+    # get count of days and return most common one
+    # map dates to just days
+    # sorted by date
+    days = [i.day for i in invoice_dates]
+    counts = Counter(days)
+    most_common = sorted(counts.most_common(), key=lambda x: x[0])
+
+    if most_common:
+        return most_common[0][0]
+    else:
+        return None
+
+
+def get_basis(cur_row):
+    canonical_vendor_id = cur_row["canonical_vendor_id"]
+    invoice_dates = cur_row["Invoice Dates"]
+
+    # sorted by date
+    months = [i.month for i in invoice_dates]
+    # get differences in months
+    month_diffs = [(j-i) % 12 for i, j in zip(months[:-1], months[1:])]
+
+    if len(month_diffs) < 1:
+        return ""
+
+    avg_diff = math.fsum(month_diffs)/float(len(month_diffs))
+
+    print("the avg diff in months: ", avg_diff)
+    if avg_diff >= 2:
+        return "QUARTERLY"
+
+    return "MONTHLY"
+
+
+get_common_day = udf(
+    lambda row: get_day(row),
+    IntegerType()
+)
+get_time_basis = udf(
+    lambda row: get_basis(row),
+    StringType()
+)
+
+
+def no_invoice_received():
+    # group by dates
+    w = Window.partitionBy('canonical_vendor_id').orderBy('invoice_date')
+
+    # vendor_count_group = invoice_df.groupBy("canonical_vendor_id")
+    # date_sorted = vendor_count_group.agg(
+    #     sort_array(collect_list("invoice_date")).alias("Invoice Dates")
+    # )
+    # date_sorted.show()
+    dates_sorted = invoice_df.withColumn(
+        'sorted_invoices', collect_list("invoice_id").over(w)
+    )
+    dates_sorted.show()
+    grouped_dates = dates_sorted.groupBy('canonical_vendor_id')\
+        .agg(max('sorted_invoices').alias("sorted_invoices"),
+             sort_array(collect_list("invoice_date")).alias("Invoice Dates")
+             )
+
+    grouped_dates.show()
+
+    # get most frequent day per vendor
+    most_common_days = grouped_dates.withColumn(
+        "common_day",
+        get_common_day(
+            struct([
+                grouped_dates["canonical_vendor_id"],
+                grouped_dates["Invoice Dates"],
+            ])
+        )
+    )
+    most_common_days.show()
+
+    # determine if vendor is monthly or quarterly
+    time_basis = grouped_dates.withColumn(
+        "basis",
+        get_time_basis(
+            struct([
+                grouped_dates["canonical_vendor_id"],
+                grouped_dates["Invoice Dates"],
+            ])
+        )
+    )
+    time_basis.show()
+
+    # go through vendor and invoice dates and compute based on months as
+    # in not seen in a while using info of monthly or quarterly and most
+    # frequent date
+no_invoice_received()
 
 spark.stop()
