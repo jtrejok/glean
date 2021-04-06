@@ -71,8 +71,6 @@ def get_vender_not_seen_gleans(cur_row):
     if len(invoice_dates) <= 1:
         return gleans
 
-    # print('the invoice dates: ', invoice_dates)
-    # print('the vendor id: ', canonical_vendor_id)
     for i in range(1, len(invoice_dates)):
         # if not seen in 90 days
         last_date = invoice_dates[i-1]
@@ -99,8 +97,6 @@ def get_vender_not_seen_gleans_2(cur_row):
     if len(invoice_dates) <= 1:
         return gleans
 
-    # print('the invoice dates: ', invoice_dates)
-    # print('the vendor id: ', canonical_vendor_id)
     for i in range(1, len(invoice_dates)):
         # if not seen in 90 days
         last_date = invoice_dates[i-1]
@@ -120,49 +116,10 @@ def get_vender_not_seen_gleans_2(cur_row):
     return gleans
 
 
-vendor_glean = udf(
-    lambda row: get_vender_not_seen_gleans(row),
-    ArrayType(StringType())
-)
-
 vendor_glean_2 = udf(
     lambda row: get_vender_not_seen_gleans_2(row),
     ArrayType(StringType())
 )
-
-
-# depends on vendor id
-
-
-def vender_not_seen_in_while():
-    # keep track of whether or not a vendor has been seen
-    # map of vender and last seen date
-    vendor_count_group = invoice_df.groupBy("canonical_vendor_id")
-    print(vendor_count_group)
-    print(type(vendor_count_group))
-    date_sorted = vendor_count_group.agg(
-        sort_array(collect_list("invoice_date")).alias("Invoice Dates")
-    )
-
-    print('date sorted: ')
-    print(type(date_sorted))
-    date_sorted.show()
-
-    # go through each list and output gleans
-    # date_sorted.select("canonical_vendor_id", transform)
-    new_dates = date_sorted.withColumn(
-        "gleans",
-        vendor_glean(
-            struct([
-                date_sorted["canonical_vendor_id"],
-                date_sorted["Invoice Dates"]
-            ])))
-
-    # show only the vendor id and gleans
-    id_and_gleans = new_dates.select("canonical_vendor_id", "gleans")
-    id_and_gleans.show()
-
-    print(id_and_gleans.collect()[0])
 
 
 def vendor_take_2():
@@ -177,7 +134,6 @@ def vendor_take_2():
              )
 
     grouped_dates.show()
-    print(grouped_dates.collect()[0])
 
     new_dates = grouped_dates.withColumn("gleans", vendor_glean_2(
         struct(
@@ -186,20 +142,17 @@ def vendor_take_2():
 
     # show only the vendor id and gleans
     id_and_gleans = new_dates.select("canonical_vendor_id", "gleans")
-    id_and_gleans.show(1000)
-
-    print(id_and_gleans.collect()[0])
+    id_and_gleans.show()
 
     # get row for each glean
     id_and_gleans = id_and_gleans.select(
         "canonical_vendor_id", explode_outer("gleans").alias("gleans"))
-    id_and_gleans.show(1000)
+    id_and_gleans.show()
 
     return id_and_gleans
 
 
 vendor_gleans = vendor_take_2()
-# sys.exit()
 
 
 def get_accrual_alert_invoice(cur_row):
@@ -234,12 +187,9 @@ def get_accrual_alert_line(cur_row):
         invoice_date = datetime.strptime(
             cur_row["invoice_date"], '%Y-%m-%d').date()
         period_end = cur_row["period_end_date"][-1]
-        # print('the end date: ', period_end)
         time_dif = period_end - invoice_date
     except:
-        # print('no dates!!')
-        # print('type of invoice: ', type(invoice_date))
-        # print("type of period end: ", type(period_end))
+        # no dates found
         return ""
 
     if time_dif.days > 90:
@@ -247,13 +197,11 @@ def get_accrual_alert_line(cur_row):
         cur_date = invoice_date
         text = (f"Line items from vendor {canonical_vendor_id}"
                 f" in this invoice cover future periods (through {period_end})")
-        # print('setting a glean')
         return (f"{glean_id}**{cur_date}**{text}**accrual_alert**"
                 f"INVOICE**{invoice_id}**{canonical_vendor_id}"
                 )
     else:
         return ""
-        # print('day difference: ', time_dif)
 
 
 accrual_glean = udf(
@@ -268,29 +216,6 @@ accrual_glean_line = udf(
 
 
 def accrual_alert():
-    # do for invoice data
-    print('the invoice df')
-    invoice_df.show()
-    invoice_with_alerts = invoice_df.withColumn(
-        "gleans",
-        accrual_glean(
-            struct([
-                invoice_df["canonical_vendor_id"],
-                invoice_df["invoice_date"],
-                invoice_df["period_end_date"],
-                invoice_df["invoice_id"]
-            ]))
-    )
-    id_and_gleans = invoice_with_alerts.select("invoice_id", "gleans")
-    id_and_gleans = id_and_gleans.filter(id_and_gleans.gleans != "")
-    id_and_gleans.show()
-
-    collected = id_and_gleans.collect()
-    num_results = len(collected)
-    print(collected[0])
-    print("number of invoice results: ", num_results)
-
-    # )
     # add invoice_date and canonical vendor id cols to line item df
     line_item_with_date = line_item_df.withColumn(
         "invoice_date", lit(None).cast(StringType()))\
@@ -324,35 +249,15 @@ def accrual_alert():
     )
     invoice_and_line_alerts.show()
 
-    ids_and_gleans = invoice_and_line_alerts.select("invoice_id", "gleans")
+    ids_and_gleans = invoice_and_line_alerts.select(
+        "canonical_vendor_id", "invoice_id", "gleans")
     ids_and_gleans = ids_and_gleans.filter(ids_and_gleans.gleans != "")
-    print('ids and gleans')
-    ids_and_gleans.show(30)
-    collected2 = ids_and_gleans.collect()
-    print(collected2[0])
-    print("number of results; ", len(collected2))
+    ids_and_gleans.show()
 
+    return ids_and_gleans
 
 # accrual_alert()
 
-# def get_month_increase(cur_row):
-#     canonical_vendor_id = cur_row["canonical_vendor_id"]
-#     invoice_dates = cur_row["Invoice Dates"]
-#     invoice_ids = cur_row["sorted_invoices"]
-#     total_amounts = cur_row["total_amount"]
-#     gleans = []
-#     if len(total_amounts) <= 1:
-#         return gleans
-
-#     # get cost for each month
-#     month_costs = defaultdict(int)
-#     last_seen_month = 13
-#     for i in range(1, len(total_amounts)):
-#         cur_month = invoice_dates[i-1].month
-#         cur_total = total_amounts[i-1]
-#         if cur_month < last_seen_month:
-#             last_seen_month = cur_month
-#         month_costs[last_seen_month] += cur_total
 
 def get_month_glean(cur_row):
     canonical_vendor_id = cur_row["canonical_vendor_id"]
@@ -408,9 +313,7 @@ def large_month_increase():
         date_trunc("month", invoice_df.invoice_date).alias('month'))\
         .agg(sum("total_amount").alias('total_amount'), last('invoice_id').alias('invoice_id'))
 
-    print('monthts sum ')
     months_sum.show()
-    print(len(months_sum.collect()))
 
     # get dataframe of averages for each vendor
 
@@ -419,7 +322,6 @@ def large_month_increase():
         'canonical_vendor_id')\
         .agg(avg("total_amount").alias("average"))
 
-    print('avgs')
     avgs.show()
 
     months_and_avgs = months_sum.join(avgs, 'canonical_vendor_id')
@@ -441,10 +343,11 @@ def large_month_increase():
     month_gleans = month_gleans.filter(month_gleans.gleans != "")
 
     month_gleans.show()
-    print(month_gleans.collect()[0])
 
+    return month_gleans
 
 # large_month_increase()
+
 
 def get_day(cur_row):
     canonical_vendor_id = cur_row["canonical_vendor_id"]
@@ -477,7 +380,6 @@ def get_basis(cur_row):
 
     avg_diff = math.fsum(month_diffs)/float(len(month_diffs))
 
-    # print("the avg diff in months: ", avg_diff)
     if avg_diff >= 2:
         return "QUARTERLY"
 
@@ -573,11 +475,6 @@ def no_invoice_received():
     # group by dates
     w = Window.partitionBy('canonical_vendor_id').orderBy('invoice_date')
 
-    # vendor_count_group = invoice_df.groupBy("canonical_vendor_id")
-    # date_sorted = vendor_count_group.agg(
-    #     sort_array(collect_list("invoice_date")).alias("Invoice Dates")
-    # )
-    # date_sorted.show()
     dates_sorted = invoice_df.withColumn(
         'sorted_invoices', collect_list("invoice_id").over(w)
     )
@@ -652,17 +549,11 @@ def no_invoice_received():
     id_and_gleans = id_and_gleans.filter(id_and_gleans.gleans.isNotNull())
     id_and_gleans.show()
 
-    print(id_and_gleans.collect()[0])
-
     return id_and_gleans
 
 
 #test_df = no_invoice_received()
 
-
-# TODO
-# union all result dataframes
-# transform gleans column : withColumn()
 
 def split_dataframe(input_df):
     split_col = split(input_df["gleans"], "[**]")
@@ -678,7 +569,27 @@ def split_dataframe(input_df):
 
 # split_dataframe(test_df)
 
-splitdf = split_dataframe(vendor_gleans)
-print(vendor_gleans.collect()[0])
-print(splitdf.collect()[0])
+
+if __name__ == '__main__':
+    vendor_gleans = vendor_take_2()
+    accrual_gleans = accrual_alert()
+    month_gleans = large_month_increase()
+    no_invoice_gleans = no_invoice_received()
+
+    cols_to_union = ["canonical_vendor_id", "gleans"]
+    unioned_df = vendor_gleans.unionAll(
+        accrual_gleans.select(*cols_to_union))\
+        .unionAll(month_gleans.select(*cols_to_union))\
+        .unionAll(no_invoice_gleans.select(*cols_to_union))
+
+    # remove null values
+    vendor_id_gleans = unioned_df.filter(unioned_df.gleans.isNotNull())
+    vendor_id_gleans = split_dataframe(vendor_id_gleans)
+    vendor_id_gleans = vendor_id_gleans.drop("gleans")
+    vendor_id_gleans.show(1000)
+
+    vendor_id_gleans.toPandas().to_csv("gleans.csv")
+    spark.stop()
+
+
 spark.stop()
